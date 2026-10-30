@@ -82,11 +82,32 @@ export function resolveNodeExecutable({ env = process.env, executable = process.
   if (!versions.electron) return executable;
   const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
   const searchPath = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] || '';
+  // 2026-10-30：使用者装完插件点「开始自主观看」直接失败，原因就是这里只认 PATH 和 DSH 安装目录，
+  // 而多数机器只是「跟着 DSH 装了运行时」，node 在 ~\.dsh\dsh-runtimes 下、不在 PATH 里。
+  const runtimeNodes = (() => {
+    const root = path.join(homedir(), '.dsh', 'dsh-runtimes');
+    let entries = [];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() && !entry.name.endsWith('.previous'))
+        .map(entry => ({ file: path.join(root, entry.name, 'dependencies', 'node', 'bin', nodeName), mtime: (() => { try { return fs.statSync(path.join(root, entry.name, 'dependencies', 'node', 'bin', nodeName)).mtimeMs; } catch { return 0; } })() }))
+        .filter(item => item.mtime > 0)
+        .sort((a, b) => b.mtime - a.mtime);
+    } catch { /* 没有运行时目录就跳过 */ }
+    return entries.map(item => item.file);
+  })();
+  const fixedLocations = process.platform === 'win32'
+    ? ['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'].filter(key => typeof env[key] === 'string' && path.isAbsolute(env[key])).map(key => path.join(env[key], 'Programs', 'nodejs', nodeName)).concat(['ProgramFiles', 'ProgramFiles(x86)'].filter(key => typeof env[key] === 'string' && path.isAbsolute(env[key])).map(key => path.join(env[key], 'nodejs', nodeName)))
+    : ['/usr/local/bin', '/usr/bin', '/opt/homebrew/bin'].map(directory => path.join(directory, nodeName));
   const candidates = [
     ...(resourcesPath && path.isAbsolute(resourcesPath) ? [path.join(resourcesPath, 'runtime', 'node', nodeName)] : []),
     path.join(sourceRoot, 'desktop', '.cache', 'generated', 'node', nodeName),
+    ...runtimeNodes,
+    ...fixedLocations,
     ...searchPath.split(path.delimiter).map(directory => directory.trim().replace(/^"(.*)"$/, '$1')).filter(directory => path.isAbsolute(directory)).map(directory => path.join(directory, nodeName)),
   ];
   for (const candidate of new Set(candidates)) if (isIndependentNode(candidate, env, executable, versions)) return candidate;
-  throw new Error('未找到独立 Node.js 22.13 或更高版本。请安装 Node.js，或将 DOUYIN_NODE_EXECUTABLE 设置为现有 node.exe 的绝对路径后重试。');
+  throw new Error('没找到可用的 Node.js（需要 22.13 或更高版本）。插件要用它单独起一个浏览器进程。\n'
+    + '最省事的办法：装一次 Node.js LTS（https://nodejs.org/zh-cn/download ），装完重开 DSH 再试。\n'
+    + '已经装了但装在别处的话，把环境变量 DOUYIN_NODE_EXECUTABLE 设成那个 node.exe 的完整路径。');
 }

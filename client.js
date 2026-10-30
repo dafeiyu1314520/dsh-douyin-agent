@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: 'dsh-douyin-browser-local',
+  id: 'dsh-douyin-agent',
   factory: require => {
     const React = require('react');
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
