@@ -9,6 +9,43 @@ export { MessageIdentityTracker } from './message-tracker.mjs';
 const HOME = 'https://www.douyin.com/?recommend=1&from_nav=1';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const stop = signal => signal?.throwIfAborted();
+// 2026-10-31：读「我的关注」名单。原来的实现依赖抖音的哈希类名（.OlxToPIh / .Zce7SWd3），
+// 改版后名单还会开在新标签页，导致 followed 全是 null、设置页的许可好友勾选框全灰。
+// 现在按行读、按按钮文字判关系：类名再变也不影响；新标签页由 verifyFollowing 负责接管。
+const readFollowingRows = () => {
+  const root = document.querySelector('[data-e2e="user-fans-container"]') || document.body;
+  const order = ['相互关注', '已关注', '关注', '回关'];
+  const pick = row => {
+    const button = [...row.querySelectorAll('button')].find(item => (item.textContent || '').trim());
+    if (!button) return null;
+    const text = (button.textContent || '').trim();
+    const label = order.find(item => text.startsWith(item));
+    if (!label) return null;
+    const names = [...row.querySelectorAll('a')].map(anchor => (anchor.textContent || '').trim()).filter(Boolean);
+    if (!names.length) return null;
+    return { displayName: names[0], mutual: label === '相互关注', followed: label !== '关注' && label !== '回关' };
+  };
+  const out = [];
+  for (const row of root.querySelectorAll('.OlxToPIh, li')) {
+    const item = pick(row);
+    if (item) out.push(item);
+  }
+  if (!out.length) {
+    // 类名全换了也能用：从按钮往上找能读出名字的那一层当行。
+    for (const button of root.querySelectorAll('button')) {
+      const text = (button.textContent || '').trim();
+      if (!order.some(item => text.startsWith(item))) continue;
+      let node = button.parentElement;
+      for (let depth = 0; depth < 5 && node && node !== root; depth += 1) {
+        const item = pick(node);
+        if (item) { out.push(item); break; }
+        node = node.parentElement;
+      }
+    }
+  }
+  const seen = new Set();
+  return out.filter(item => (seen.has(item.displayName) ? false : (seen.add(item.displayName), true)));
+};
 const readableDraft = value => value.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '').trim();
 const localDay = value => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
 
@@ -283,20 +320,27 @@ export class ChatBrowser {
     await page.goto(target.href, { waitUntil: 'domcontentloaded' });
     await page.locator('[data-e2e="user-info-follow"]').waitFor({ state: 'visible', timeout: 10_000 });
     await page.waitForTimeout(800);
-    const expectedCount = await page.locator('[data-e2e="user-info-follow"]').evaluate(element => Number(/\d+/.exec(element.textContent)?.[0] ?? 0));
-    const first = page.locator('[data-e2e="user-fans-container"] .OlxToPIh').first();
-    for (let attempt = 0; attempt < 3 && !await first.isVisible().catch(() => false); attempt += 1) {
-      stop(signal);
-      await page.locator('[data-e2e="user-info-follow"]').click();
-      await first.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
-    }
-    if (!await first.isVisible()) throw new Error('本人的关注列表未就绪，未确认联系人关系。');
-    if (expectedCount > 0 && expectedCount <= 20) await page.waitForFunction(count => document.querySelectorAll('[data-e2e="user-fans-container"] .OlxToPIh').length >= count, expectedCount, { timeout: 10_000 });
     stop(signal);
-    this.following = await page.evaluate(() => [...document.querySelectorAll('[data-e2e="user-fans-container"] .OlxToPIh')].map(row => ({
-      displayName: row.querySelector('.Zce7SWd3 a')?.textContent.trim(),
-      mutual: [...row.querySelectorAll('button')].some(button => button.textContent.trim() === '相互关注'),
-    })));
+    // 2026-10-31：改版后点「关注」有时把名单开在**新标签页**，原来只在当前页找，永远找不到。
+    // 这里两条路都走：等 popup（新标签页），没有 popup 就读当前页；读不到再点一次，最多三次。
+    let rows = [];
+    for (let attempt = 0; attempt < 3 && !rows.length; attempt += 1) {
+      stop(signal);
+      const popupPromise = page.waitForEvent('popup', { timeout: 4000 }).catch(() => null);
+      await page.locator('[data-e2e="user-info-follow"]').click({ timeout: 5000 }).catch(() => {});
+      const popup = await popupPromise;
+      const view = popup || page;
+      if (popup) {
+        await popup.waitForLoadState('domcontentloaded').catch(() => {});
+        await popup.waitForTimeout(1200);
+      }
+      await view.locator('[data-e2e="user-fans-container"]').first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      rows = await view.evaluate(readFollowingRows).catch(() => []);
+      if (!rows.length) rows = await page.evaluate(readFollowingRows).catch(() => []);
+      if (popup) await popup.close().catch(() => {});
+    }
+    if (!rows.length) throw new Error('本人的关注列表未就绪，未确认联系人关系。');
+    this.following = rows;
     await page.goto(HOME, { waitUntil: 'domcontentloaded' });
     await this.dialog(page, signal);
   }
