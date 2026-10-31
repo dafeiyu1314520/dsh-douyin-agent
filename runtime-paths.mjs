@@ -99,8 +99,21 @@ export function resolveNodeExecutable({ env = process.env, executable = process.
   const fixedLocations = process.platform === 'win32'
     ? ['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'].filter(key => typeof env[key] === 'string' && path.isAbsolute(env[key])).map(key => path.join(env[key], 'Programs', 'nodejs', nodeName)).concat(['ProgramFiles', 'ProgramFiles(x86)'].filter(key => typeof env[key] === 'string' && path.isAbsolute(env[key])).map(key => path.join(env[key], 'nodejs', nodeName)))
     : ['/usr/local/bin', '/usr/bin', '/opt/homebrew/bin'].map(directory => path.join(directory, nodeName));
+  // 2026-10-31：DSH 0.2.1-rc.5 把 Node 放在 resources\runtime\primary-runtime\dependencies\node\bin\node.exe，
+  // 和插件原来找的 resources\runtime\node\node.exe 不是同一个目录——使用者就是这样五处全落空、浏览器起不来。
+  const runtimeCandidates = (() => {
+    if (!resourcesPath || !path.isAbsolute(resourcesPath)) return [];
+    const root = path.join(resourcesPath, 'runtime');
+    const found = [path.join(root, 'node', nodeName)];
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory()) found.push(path.join(root, entry.name, 'dependencies', 'node', 'bin', nodeName));
+      }
+    } catch { /* 没有 runtime 目录就只留默认那条 */ }
+    return found;
+  })();
   const candidates = [
-    ...(resourcesPath && path.isAbsolute(resourcesPath) ? [path.join(resourcesPath, 'runtime', 'node', nodeName)] : []),
+    ...runtimeCandidates,
     path.join(sourceRoot, 'desktop', '.cache', 'generated', 'node', nodeName),
     ...runtimeNodes,
     ...fixedLocations,

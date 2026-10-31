@@ -1,6 +1,6 @@
 {
   "name": "dsh-douyin-agent",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "type": "module",
   "description": "DSH 原生抖音工具：有限自主观看、抽帧故事板与弹幕、人格与兴趣记忆、自动问候与私信回复、观看日报",
   "license": "MIT",

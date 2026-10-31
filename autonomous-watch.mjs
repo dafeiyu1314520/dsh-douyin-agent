@@ -192,7 +192,13 @@ export class AutonomousWatch {
     }, 500); this.heartbeat.unref?.();
     const remaining = this.videoLimits.state().session.expiresAt - this.now();
     this.deadline = setTimeout(() => this.abort.abort(failure('本轮刷视频时间已用完。', 'limited')), Math.max(1, Math.min(remaining, 2_147_483_647))); this.deadline.unref?.();
-    this.completion = Promise.resolve().then(() => this.run()).catch(error => { this.onEvent({ type: 'watch.failed', message: redact(error.message || String(error), [this.config.apiKey]) }); return { running: false, status: 'failed', reason: redact(error.message || String(error), [this.config.apiKey]) }; }).then(result => { this.notifyRoundEnd(result); return result; }).finally(() => { this.completion = null; });
+    this.completion = Promise.resolve().then(() => this.run()).catch(error => {
+      this.onEvent({ type: 'watch.failed', message: redact(error.message || String(error), [this.config.apiKey]) });
+      // 2026-10-31：启动阶段就失败（最常见是没找到 Node.js，专用浏览器根本没起来）时，
+      // 界面上的轮次秒数还在走、却什么都不会发生。这里把这一轮直接结束掉，别让它空转。
+      if (!this.track) { try { this.videoLimits.endSession({ explicit: true, reason: '本轮启动失败，已自动结束。' }); } catch { /* 结束不掉也不影响报错 */ } }
+      return { running: false, status: 'failed', reason: redact(error.message || String(error), [this.config.apiKey]) };
+    }).then(result => { this.notifyRoundEnd(result); return result; }).finally(() => { this.completion = null; });
     return this.state();
     } catch (error) {
       clearInterval(this.heartbeat); clearTimeout(this.deadline); this.running = false;
